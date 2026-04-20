@@ -89,9 +89,9 @@ def load_llm():
         st.error("HF_TOKEN not found in Streamlit Secrets. Please add it to deploy.")
         return None
 
-    # Using TinyLlama Chat model via Inference API
+    # Using a modern, supported Llama-3.2 model via Inference API
     client = InferenceClient(
-        model="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+        model="meta-llama/Llama-3.2-3B-Instruct",
         token=hf_token
     )
     return client
