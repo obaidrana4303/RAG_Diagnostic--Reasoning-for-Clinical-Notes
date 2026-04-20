@@ -1,5 +1,3 @@
 streamlit
-torch
-transformers
 rank_bm25
-accelerate
+huggingface_hub

@@ -1,10 +1,10 @@
 import json
 import os
+import streamlit as st
 from pathlib import Path
 from typing import List, Dict, Tuple
-import torch
 from rank_bm25 import BM25Okapi
-from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+from huggingface_hub import InferenceClient
 
 def load_data(data_path: str) -> Tuple[List[str], List[Dict]]:
     """
@@ -19,41 +19,41 @@ def load_data(data_path: str) -> Tuple[List[str], List[Dict]]:
         for file in files:
             if file.endswith(".json"):
                 file_path = os.path.join(root, file)
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    
-                # Combine input sections (input1 to input6)
-                full_text = ""
-                for i in range(1, 7):
-                    key = f"input{i}"
-                    if key in data:
-                        full_text += f"Section {i}: {data[key]}\n"
-                
-                if full_text.strip():
-                    documents.append(full_text)
-                    
-                    # Extract diagnosis from path or filename as metadata
-                    # path structure: .../Disease/Type/filename.json
-                    path_parts = Path(file_path).parts
-                    diagnosis = "Unknown"
-                    if len(path_parts) >= 3:
-                        diagnosis = f"{path_parts[-3]} - {path_parts[-2]}"
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
                         
-                    metadatas.append({
-                        "source": file,
-                        "diagnosis": diagnosis,
-                        "path": file_path
-                    })
-
+                    # Combine input sections (input1 to input6)
+                    full_text = ""
+                    for i in range(1, 7):
+                        key = f"input{i}"
+                        if key in data:
+                            full_text += f"Section {i}: {data[key]}\n"
                     
+                    if full_text.strip():
+                        documents.append(full_text)
+                        
+                        # Extract diagnosis from path or filename as metadata
+                        path_parts = Path(file_path).parts
+                        diagnosis = "Unknown"
+                        if len(path_parts) >= 3:
+                            diagnosis = f"{path_parts[-3]} - {path_parts[-2]}"
+                            
+                        metadatas.append({
+                            "source": file,
+                            "diagnosis": diagnosis,
+                            "path": file_path
+                        })
+                except Exception:
+                    continue
+
     return documents, metadatas
 
 def preprocess_text(text: str) -> List[str]:
     """
     Tokenizes text, removing punctuation and common stop words.
     """
-    # Simple list of stop words
-    stop_words = set([
+    stop_words = {
         "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by", 
         "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "do", "does", "did",
         "it", "this", "that", "these", "those", "i", "you", "he", "she", "we", "they", "me", "him", "her", "us", "them",
@@ -61,9 +61,8 @@ def preprocess_text(text: str) -> List[str]:
         "all", "any", "both", "each", "few", "more", "most", "other", "some", "such",
         "no", "nor", "not", "only", "own", "same", "so", "than", "too", "very",
         "can", "will", "just", "should", "now"
-    ])
+    }
     
-    # Remove punctuation and convert to lower case
     text = text.lower()
     for char in '!"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~':
         text = text.replace(char, ' ')
@@ -76,47 +75,36 @@ def create_retriever(documents: List[str]):
     Creates a BM25 retriever from the list of documents.
     """
     tokenized_corpus = [preprocess_text(doc) for doc in documents]
-    bm25 = BM25Okapi(tokenized_corpus)
-    return bm25
+    return BM25Okapi(tokenized_corpus)
 
 def load_llm():
     """
-    Loads the TinyLlama model and tokenizer.
+    Initializes the Hugging Face Inference Client using an API token.
+    Uses st.secrets for secure token management on Streamlit Cloud.
     """
-    model_id = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-    
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
-    
-    # Use GPU if available, otherwise CPU
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    
-    model = AutoModelForCausalLM.from_pretrained(
-        model_id,
-        torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-        device_map="auto" if device == "cuda" else None,
-        low_cpu_mem_usage=True
-    )
-    
-    pipe = pipeline(
-        "text-generation",
-        model=model,
-        tokenizer=tokenizer,
-        max_new_tokens=512,
-        do_sample=True,
-        temperature=0.1, # Lower temperature for more factual answers
-        top_p=0.9,
-        repetition_penalty=1.2
-    )
-    
-    return pipe
+    # Get token from secrets
+    try:
+        hf_token = st.secrets["HF_TOKEN"]
+    except Exception:
+        st.error("HF_TOKEN not found in Streamlit Secrets. Please add it to deploy.")
+        return None
 
-def rag_pipeline(query: str, bm25, documents: List[str], metadatas: List[Dict], llm_pipeline, k: int = 3):
+    # Using TinyLlama Chat model via Inference API
+    client = InferenceClient(
+        model="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+        token=hf_token
+    )
+    return client
+
+def rag_pipeline(query: str, bm25, documents: List[str], metadatas: List[Dict], client, k: int = 3):
     """
-    Runs the RAG pipeline: Retrieve -> Generate.
+    Runs the RAG pipeline using the HF Inference API.
     """
+    if client is None:
+        return "Error: LLM Client not initialized. Please check your API token.", []
+
     # 1. Retrieve
     tokenized_query = preprocess_text(query)
-    # Get top n document indices
     scores = bm25.get_scores(tokenized_query)
     top_n_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:k]
     
@@ -126,28 +114,27 @@ def rag_pipeline(query: str, bm25, documents: List[str], metadatas: List[Dict], 
     # 2. Prepare Context
     context = ""
     for i, doc in enumerate(retrieved_docs):
-        context += f"Document {i+1} (Diagnosis: {retrieved_metas[i]['diagnosis']}):\n{doc[:1500]}...\n\n" # Increased context window slightly
+        # Snippet to keep prompt size manageable
+        context += f"Document {i+1} (Diagnosis: {retrieved_metas[i]['diagnosis']}):\n{doc[:1000]}...\n\n"
         
-    # 3. Generate Prompt
-    # TinyLlama chat format
+    # 3. Generate using Chat format
     messages = [
-        {
-            "role": "system",
-            "content": "You are a medical assistant. Answer the user's question strictly based on the provided context. Do not hallucinate or make up information. If the answer is not in the context, simply say 'The provided documents do not contain the answer.'."
-        },
-        {
-            "role": "user",
-            "content": f"Context:\n{context}\n\nQuestion: {query}"
-        }
+        {"role": "system", "content": "You are a medical assistant. Answer the user's question strictly based on the provided context. If the answer is not in the context, say 'The provided documents do not contain the answer.'"},
+        {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"}
     ]
     
-    prompt = llm_pipeline.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    
-    # 4. Generate Answer
-    outputs = llm_pipeline(prompt)
-    generated_text = outputs[0]["generated_text"]
-    
-    # Extract just the assistant's response
-    response = generated_text.split("<|assistant|>")[-1].strip()
-    
-    return response, retrieved_metas
+    try:
+        response = ""
+        for message in client.chat_completion(
+            messages,
+            max_tokens=512,
+            temperature=0.1,
+            stream=True
+        ):
+            token = message.choices[0].delta.content
+            if token:
+                response += token
+        
+        return response.strip(), retrieved_metas
+    except Exception as e:
+        return f"API Error: {str(e)}", []
