@@ -123,14 +123,29 @@ def rag_pipeline(query: str, bm25, documents: List[str], metadatas: List[Dict], 
         {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"}
     ]
     
-    try:
-        completion = client.chat.completions.create(
-            model="Qwen/Qwen2.5-7B-Instruct-1M",
-            messages=messages,
-            max_tokens=512,
-            temperature=0.1,
-        )
-        response = completion.choices[0].message.content
-        return response.strip(), retrieved_metas
-    except Exception as e:
-        return f"API Error: {str(e)}", []
+    # List of models to try, in order of preference
+    # Format: "model_id:provider" as documented by HF
+    models_to_try = [
+        "Qwen/Qwen2.5-7B-Instruct-1M:novita",
+        "Qwen/Qwen2.5-7B-Instruct-1M:cerebras",
+        "meta-llama/Llama-3.1-8B-Instruct:novita",
+        "meta-llama/Llama-3.1-8B-Instruct:cerebras",
+        "mistralai/Mistral-7B-Instruct-v0.3:hf-inference",
+    ]
+    
+    last_error = None
+    for model_id in models_to_try:
+        try:
+            completion = client.chat.completions.create(
+                model=model_id,
+                messages=messages,
+                max_tokens=512,
+                temperature=0.1,
+            )
+            response = completion.choices[0].message.content
+            return response.strip(), retrieved_metas
+        except Exception as e:
+            last_error = e
+            continue
+    
+    return f"API Error: All models failed. Last error: {str(last_error)}", []
