@@ -4,7 +4,7 @@ import streamlit as st
 from pathlib import Path
 from typing import List, Dict, Tuple
 from rank_bm25 import BM25Okapi
-from huggingface_hub import InferenceClient
+from openai import OpenAI
 
 def load_data(data_path: str) -> Tuple[List[str], List[Dict]]:
     """
@@ -79,26 +79,26 @@ def create_retriever(documents: List[str]):
 
 def load_llm():
     """
-    Initializes the Hugging Face Inference Client using an API token.
-    Uses st.secrets for secure token management on Streamlit Cloud.
+    Initializes the OpenAI-compatible client pointing to the
+    Hugging Face Inference Providers router.
+    This is the officially documented approach from HF docs.
     """
-    # Get token from secrets
     try:
         hf_token = st.secrets["HF_TOKEN"]
     except Exception:
         st.error("HF_TOKEN not found in Streamlit Secrets. Please add it to deploy.")
         return None
 
-    # Using Qwen-2.5 (Not Gated, very fast) via Inference API
-    client = InferenceClient(
-        model="Qwen/Qwen2.5-1.5B-Instruct",
-        token=hf_token
+    client = OpenAI(
+        base_url="https://router.huggingface.co/v1",
+        api_key=hf_token,
     )
     return client
 
 def rag_pipeline(query: str, bm25, documents: List[str], metadatas: List[Dict], client, k: int = 3):
     """
-    Runs the RAG pipeline using the HF Inference API.
+    Runs the RAG pipeline using the HF Inference Providers API.
+    Uses the OpenAI-compatible endpoint as documented by Hugging Face.
     """
     if client is None:
         return "Error: LLM Client not initialized. Please check your API token.", []
@@ -114,27 +114,23 @@ def rag_pipeline(query: str, bm25, documents: List[str], metadatas: List[Dict], 
     # 2. Prepare Context
     context = ""
     for i, doc in enumerate(retrieved_docs):
-        # Snippet to keep prompt size manageable
         context += f"Document {i+1} (Diagnosis: {retrieved_metas[i]['diagnosis']}):\n{doc[:1000]}...\n\n"
         
-    # 3. Generate using Chat format
+    # 3. Generate using the officially recommended model + provider
+    # Model format: "model_id:provider" as shown in HF docs
     messages = [
         {"role": "system", "content": "You are a medical assistant. Answer the user's question strictly based on the provided context. If the answer is not in the context, say 'The provided documents do not contain the answer.'"},
         {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"}
     ]
     
     try:
-        response = ""
-        for message in client.chat_completion(
-            messages,
+        completion = client.chat.completions.create(
+            model="Qwen/Qwen2.5-7B-Instruct-1M",
+            messages=messages,
             max_tokens=512,
             temperature=0.1,
-            stream=True
-        ):
-            token = message.choices[0].delta.content
-            if token:
-                response += token
-        
+        )
+        response = completion.choices[0].message.content
         return response.strip(), retrieved_metas
     except Exception as e:
         return f"API Error: {str(e)}", []
