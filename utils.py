@@ -89,9 +89,9 @@ def load_llm():
         st.error("HF_TOKEN not found in Streamlit Secrets. Please add it to deploy.")
         return None
 
-    # Using a modern, supported Llama-3.2 model via Inference API
+    # Using Qwen-2.5 (Not Gated, very fast) via Inference API
     client = InferenceClient(
-        model="meta-llama/Llama-3.2-3B-Instruct",
+        model="Qwen/Qwen2.5-1.5B-Instruct",
         token=hf_token
     )
     return client
